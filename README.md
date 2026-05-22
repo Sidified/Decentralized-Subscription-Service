@@ -1,4 +1,4 @@
-# Decentralized Subscription Service
+# Decentralized Subscription Service (Work In Progress)
 
 A Solidity + Foundry + Chainlink Automation practice project focused on:
 
