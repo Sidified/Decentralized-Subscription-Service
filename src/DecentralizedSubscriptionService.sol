@@ -124,7 +124,19 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
     //// EXTERNAL FUNCTIONS ////
 
     //// PROVIDER'S FUNCTIONS ////
-    function registerPlan(address token, uint256 price, uint256 interval, string memory name) external {}
+    function registerPlan(address token, uint256 price, uint256 interval, string memory name) external {
+        if (token == address(0)) revert DecentralizedSubscriptionService__InvalidTokenAddress();
+        if (price == 0) revert DecentralizedSubscriptionService__PlanPriceMustBeNonZero();
+        if (interval == 0) revert DecentralizedSubscriptionService__PlanIntervalMustBeNonZero();
+
+        uint256 newPlanId = s_nextPlanId; // read first
+        s_plans[newPlanId] =
+            Plan({provider: msg.sender, token: token, price: price, interval: interval, isActive: true, name: name}); // write the plan
+
+        s_nextPlanId = newPlanId + 1; // increment the counter
+
+        emit PlanRegistered(newPlanId, msg.sender, token, price, interval, name); // emith the event
+    }
 
     function disablePlan(uint256 planId) external {}
 
