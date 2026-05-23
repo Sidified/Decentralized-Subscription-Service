@@ -135,10 +135,20 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
 
         s_nextPlanId = newPlanId + 1; // increment the counter
 
-        emit PlanRegistered(newPlanId, msg.sender, token, price, interval, name); // emith the event
+        emit PlanRegistered(newPlanId, msg.sender, token, price, interval, name);
     }
 
-    function disablePlan(uint256 planId) external {}
+    function disablePlan(uint256 planId) external {
+        if (planId == 0 || planId >= s_nextPlanId) revert DecentralizedSubscriptionService__PlanDoesNotExist();
+        Plan storage p = s_plans[planId];
+
+        if (msg.sender != p.provider) revert DecentralizedSubscriptionService__NotPlanOwner();
+        if (p.isActive == false) revert DecentralizedSubscriptionService__PlanNotActive();
+
+        p.isActive = false; // change the active status of the plan from true to false
+
+        emit PlanDisabled(planId);
+    }
 
     function withdrawProviderEarnings(address token) external {}
 
