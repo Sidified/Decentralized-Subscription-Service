@@ -150,7 +150,21 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
         emit PlanDisabled(planId);
     }
 
-    function withdrawProviderEarnings(address token) external {}
+    function withdrawProviderEarnings(address token) external nonReentrant {
+        // Checks
+        if (s_providerEarnings[msg.sender][token] == 0) {
+            revert DecentralizedSubscriptionService__NoEarningsToWithdraw();
+        }
+
+        // Effects
+        uint256 providerEarning = s_providerEarnings[msg.sender][token];
+        s_providerEarnings[msg.sender][token] = 0;
+
+        // Interactions
+        SafeERC20.safeTransfer(IERC20(token), msg.sender, providerEarning);
+
+        emit ProviderEarningsWithdrawn(msg.sender, token, providerEarning);
+    }
 
     //// USER'S FUNCTIONS ////
     function subscribe(uint256 planId, uint256 depositAmount) external {}
