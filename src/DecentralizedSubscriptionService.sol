@@ -197,9 +197,30 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
         }
     }
 
-    function _addToActiveArray(uint256 subscriptionId) internal {}
+    function _addToActiveArray(uint256 subscriptionId) internal {
+        uint256 newIndex = s_activeSubscriptionIds.length;
+        s_activeSubscriptionIds.push(subscriptionId); // this step will increase the s_activeSubscriptionIds's length
+        s_subscriptionIdToArrayIndex[subscriptionId] = newIndex;
+    }
 
-    function _removeFromActiveArray(uint256 subscriptionId) internal {}
+    /// @dev Removes `subscriptionId` from the active array using swap-and-pop.
+    ///      Caller MUST ensure the ID is present in the array; calling on a
+    ///      non-existent ID will corrupt array state.
+    function _removeFromActiveArray(uint256 subscriptionId) internal {
+        uint256 indexToRemove = s_subscriptionIdToArrayIndex[subscriptionId];
+        uint256 lastIndex = s_activeSubscriptionIds.length - 1;
+        uint256 lastId = s_activeSubscriptionIds[lastIndex];
+
+        // Move the last element into the removed slot
+        s_activeSubscriptionIds[indexToRemove] = lastId;
+        // Update the mapping for the moved element
+        s_subscriptionIdToArrayIndex[lastId] = indexToRemove;
+
+        // Pop the (now duplicate) last element
+        s_activeSubscriptionIds.pop();
+        // Clear the removed subscription's mapping entry
+        delete s_subscriptionIdToArrayIndex[subscriptionId];
+    }
 
     //// VIEW FUNCTIONS ////
     function getPlan(uint256 planId) external view returns (Plan memory) {}
