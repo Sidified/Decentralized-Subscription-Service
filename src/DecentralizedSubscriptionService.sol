@@ -48,6 +48,7 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
     error DecentralizedSubscriptionService__FeeOnTransferNotSupported();
     error DecentralizedSubscriptionService__NoEarningsToWithdraw();
     error DecentralizedSubscriptionService__OnlySelfCallable();
+    error DecentralizedSubscriptionService__AmountMustBeNonZero();
 
     //// TYPE DECLARATIONS ////
 
@@ -204,7 +205,30 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
         emit SubscriptionCreated(newSubscriptionId, msg.sender, planId, depositAmount);
     }
 
-    function topUp(uint256 subscriptionId, uint256 amount) external {}
+    function topUp(uint256 subscriptionId, uint256 amount) external nonReentrant {
+        // Checks
+        if (subscriptionId == 0 || subscriptionId >= s_nextSubscriptionId) {
+            revert DecentralizedSubscriptionService__SubscriptionDoesNotExist();
+        }
+        Subscription storage s = s_subscriptions[subscriptionId];
+        if (s.subscriber != msg.sender) revert DecentralizedSubscriptionService__NotSubscriptionOwner();
+        if (s.status != SubscriptionStatus.Active) revert DecentralizedSubscriptionService__SubscriptionNotActive();
+        if (amount == 0) revert DecentralizedSubscriptionService__AmountMustBeNonZero();
+
+        // Effects
+        s.balance += amount;
+
+        // Interactions
+        Plan memory p = s_plans[s.planId];
+        IERC20 planToken = IERC20(p.token);
+        uint256 balanceBefore = planToken.balanceOf(address(this));
+        SafeERC20.safeTransferFrom(planToken, msg.sender, address(this), amount);
+        if (planToken.balanceOf(address(this)) - balanceBefore != amount) {
+            revert DecentralizedSubscriptionService__FeeOnTransferNotSupported();
+        }
+
+        emit SubscriptionToppedUp(subscriptionId, amount, s.balance);
+    }
 
     function cancelSubscription(uint256 subscriptionId) external {}
 
