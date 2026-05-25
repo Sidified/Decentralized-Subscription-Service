@@ -292,7 +292,32 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
     }
 
     //// CHAINLINK FUNCTIONS ////
-    function checkUpkeep(bytes calldata) external view override returns (bool upkeepNeeded, bytes memory performData) {}
+    function checkUpkeep(bytes calldata) external view override returns (bool upkeepNeeded, bytes memory performData) {
+        // Pass 1: count
+        uint256 count = 0;
+        for (uint256 i = 0; i < s_activeSubscriptionIds.length; i++) {
+            uint256 id = s_activeSubscriptionIds[i];
+            if (s_subscriptions[id].nextPaymentDue <= block.timestamp) {
+                count++;
+            }
+        }
+
+        // Pass 2: fill
+        uint256[] memory dueIds = new uint256[](count);
+        uint256 j = 0;
+        for (uint256 i = 0; i < s_activeSubscriptionIds.length; i++) {
+            uint256 id = s_activeSubscriptionIds[i];
+            if (s_subscriptions[id].nextPaymentDue <= block.timestamp) {
+                dueIds[j] = id;
+                j++;
+            }
+        }
+
+        upkeepNeeded = count > 0;
+        performData = abi.encode(dueIds);
+
+        return (upkeepNeeded, performData);
+    }
 
     function performUpkeep(bytes calldata performData) external override nonReentrant {
         uint256[] memory subscriptionIds = abi.decode(performData, (uint256[]));
