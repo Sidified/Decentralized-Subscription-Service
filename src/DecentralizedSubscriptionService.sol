@@ -219,7 +219,7 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
         s.balance += amount;
 
         // Interactions
-        Plan memory p = s_plans[s.planId];
+        Plan storage p = s_plans[s.planId];
         IERC20 planToken = IERC20(p.token);
         uint256 balanceBefore = planToken.balanceOf(address(this));
         SafeERC20.safeTransferFrom(planToken, msg.sender, address(this), amount);
@@ -230,7 +230,37 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
         emit SubscriptionToppedUp(subscriptionId, amount, s.balance);
     }
 
-    function cancelSubscription(uint256 subscriptionId) external {}
+    function cancelSubscription(uint256 subscriptionId) external nonReentrant {
+        // Checks
+        if (subscriptionId == 0 || subscriptionId >= s_nextSubscriptionId) {
+            revert DecentralizedSubscriptionService__SubscriptionDoesNotExist();
+        }
+        Subscription storage s = s_subscriptions[subscriptionId];
+        if (s.subscriber != msg.sender) revert DecentralizedSubscriptionService__NotSubscriptionOwner();
+        if (s.status == SubscriptionStatus.Cancelled) revert DecentralizedSubscriptionService__SubscriptionAlreadyCancelled();
+
+        // Effects
+        if (s.status == SubscriptionStatus.Active) {
+            // Lapsed Subscriptions are already removed from the active subscriptions array
+            _removeFromActiveArray(subscriptionId);
+        }
+        s.status = SubscriptionStatus.Cancelled;
+
+        // Clear the mapping
+        delete s_userPlanToSubscriptionId[msg.sender][s.planId];
+
+        uint256 balance = s.balance;
+        s.balance = 0;
+
+        // Interactions
+        if (balance != 0) {
+            Plan storage p = s_plans[s.planId];
+            IERC20 planToken = IERC20(p.token);
+            SafeERC20.safeTransfer(planToken, msg.sender, balance);
+        }
+
+        emit SubscriptionCancelled(subscriptionId, balance);
+    }
 
     function reactivate(uint256 subscriptionId, uint256 depositAmount) external {}
 
