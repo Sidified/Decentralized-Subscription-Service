@@ -140,7 +140,7 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
     }
 
     function disablePlan(uint256 planId) external {
-        if (planId == 0 || planId >= s_nextPlanId) revert DecentralizedSubscriptionService__PlanDoesNotExist();
+        _validatePlanId(planId);
         Plan storage p = s_plans[planId];
 
         if (msg.sender != p.provider) revert DecentralizedSubscriptionService__NotPlanOwner();
@@ -170,7 +170,7 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
     //// USER'S FUNCTIONS ////
     function subscribe(uint256 planId, uint256 depositAmount) external nonReentrant {
         // Checks
-        if (planId == 0 || planId >= s_nextPlanId) revert DecentralizedSubscriptionService__PlanDoesNotExist();
+        _validatePlanId(planId);
         Plan storage p = s_plans[planId];
         if (p.isActive == false) revert DecentralizedSubscriptionService__PlanNotActive();
         if (s_userPlanToSubscriptionId[msg.sender][planId] != 0) {
@@ -207,9 +207,7 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
 
     function topUp(uint256 subscriptionId, uint256 amount) external nonReentrant {
         // Checks
-        if (subscriptionId == 0 || subscriptionId >= s_nextSubscriptionId) {
-            revert DecentralizedSubscriptionService__SubscriptionDoesNotExist();
-        }
+        _validateSubscriptionId(subscriptionId);
         Subscription storage s = s_subscriptions[subscriptionId];
         if (s.subscriber != msg.sender) revert DecentralizedSubscriptionService__NotSubscriptionOwner();
         if (s.status != SubscriptionStatus.Active) revert DecentralizedSubscriptionService__SubscriptionNotActive();
@@ -232,9 +230,7 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
 
     function cancelSubscription(uint256 subscriptionId) external nonReentrant {
         // Checks
-        if (subscriptionId == 0 || subscriptionId >= s_nextSubscriptionId) {
-            revert DecentralizedSubscriptionService__SubscriptionDoesNotExist();
-        }
+        _validateSubscriptionId(subscriptionId);
         Subscription storage s = s_subscriptions[subscriptionId];
         if (s.subscriber != msg.sender) revert DecentralizedSubscriptionService__NotSubscriptionOwner();
         if (s.status == SubscriptionStatus.Cancelled) {
@@ -266,9 +262,7 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
 
     function reactivate(uint256 subscriptionId, uint256 depositAmount) external nonReentrant {
         // Checks
-        if (subscriptionId == 0 || subscriptionId >= s_nextSubscriptionId) {
-            revert DecentralizedSubscriptionService__SubscriptionDoesNotExist();
-        }
+        _validateSubscriptionId(subscriptionId);
         Subscription storage s = s_subscriptions[subscriptionId];
         Plan storage p = s_plans[s.planId];
         if (msg.sender != s.subscriber) revert DecentralizedSubscriptionService__NotSubscriptionOwner();
@@ -316,6 +310,20 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
         SafeERC20.safeTransferFrom(IERC20(token), from, address(this), amount);
         if (IERC20(token).balanceOf(address(this)) - balanceBefore != amount) {
             revert DecentralizedSubscriptionService__FeeOnTransferNotSupported();
+        }
+    }
+
+    /// @dev Reverts if planId is 0 or not yet assigned. Use before reading s_plans[planId].
+    function _validatePlanId(uint256 planId) internal view {
+        if (planId == 0 || planId >= s_nextPlanId) {
+            revert DecentralizedSubscriptionService__PlanDoesNotExist();
+        }
+    }
+
+    /// @dev Reverts if subscriptionId is 0 or not yet assigned. Use before reading s_subscriptions[subscriptionId].
+    function _validateSubscriptionId(uint256 subscriptionId) internal view {
+        if (subscriptionId == 0 || subscriptionId >= s_nextSubscriptionId) {
+            revert DecentralizedSubscriptionService__SubscriptionDoesNotExist();
         }
     }
 
