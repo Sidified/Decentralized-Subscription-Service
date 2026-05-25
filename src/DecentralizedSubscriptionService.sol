@@ -167,7 +167,42 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
     }
 
     //// USER'S FUNCTIONS ////
-    function subscribe(uint256 planId, uint256 depositAmount) external {}
+    function subscribe(uint256 planId, uint256 depositAmount) external nonReentrant {
+        // Checks
+        if (planId == 0 || planId >= s_nextPlanId) revert DecentralizedSubscriptionService__PlanDoesNotExist();
+        Plan storage p = s_plans[planId];
+        if (p.isActive == false) revert DecentralizedSubscriptionService__PlanNotActive();
+        if (s_userPlanToSubscriptionId[msg.sender][planId] != 0) {
+            revert DecentralizedSubscriptionService__AlreadySubscribed();
+        }
+        if (depositAmount < p.price) revert DecentralizedSubscriptionService__InsufficientDeposit();
+
+        // Effects
+        s_providerEarnings[p.provider][p.token] += p.price;
+        uint256 newSubscriptionId = s_nextSubscriptionId;
+        s_subscriptions[newSubscriptionId] = Subscription({
+            subscriber: msg.sender,
+            planId: planId,
+            balance: depositAmount - p.price,
+            nextPaymentDue: block.timestamp + p.interval,
+            status: SubscriptionStatus.Active
+        });
+        s_nextSubscriptionId = newSubscriptionId + 1;
+
+        s_userPlanToSubscriptionId[msg.sender][planId] = newSubscriptionId;
+
+        _addToActiveArray(newSubscriptionId);
+
+        // Interactions
+        IERC20 planToken = IERC20(p.token);
+        uint256 balanceBefore = planToken.balanceOf(address(this));
+        SafeERC20.safeTransferFrom(planToken, msg.sender, address(this), depositAmount);
+        if (planToken.balanceOf(address(this)) - balanceBefore != depositAmount) {
+            revert DecentralizedSubscriptionService__FeeOnTransferNotSupported();
+        }
+
+        emit SubscriptionCreated(newSubscriptionId, msg.sender, planId, depositAmount);
+    }
 
     function topUp(uint256 subscriptionId, uint256 amount) external {}
 
@@ -223,7 +258,9 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
     }
 
     //// VIEW FUNCTIONS ////
-    function getPlan(uint256 planId) external view returns (Plan memory) {}
+    function getPlan(uint256 planId) public view returns (Plan memory) {
+        return s_plans[planId];
+    }
 
     function getSubscription(uint256 subscriptionId) external view returns (Subscription memory) {}
 
