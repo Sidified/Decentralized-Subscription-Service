@@ -237,7 +237,9 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
         }
         Subscription storage s = s_subscriptions[subscriptionId];
         if (s.subscriber != msg.sender) revert DecentralizedSubscriptionService__NotSubscriptionOwner();
-        if (s.status == SubscriptionStatus.Cancelled) revert DecentralizedSubscriptionService__SubscriptionAlreadyCancelled();
+        if (s.status == SubscriptionStatus.Cancelled) {
+            revert DecentralizedSubscriptionService__SubscriptionAlreadyCancelled();
+        }
 
         // Effects
         if (s.status == SubscriptionStatus.Active) {
@@ -262,7 +264,38 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
         emit SubscriptionCancelled(subscriptionId, balance);
     }
 
-    function reactivate(uint256 subscriptionId, uint256 depositAmount) external {}
+    function reactivate(uint256 subscriptionId, uint256 depositAmount) external nonReentrant {
+        // Checks
+        if (subscriptionId == 0 || subscriptionId >= s_nextSubscriptionId) {
+            revert DecentralizedSubscriptionService__SubscriptionDoesNotExist();
+        }
+        Subscription storage s = s_subscriptions[subscriptionId];
+        Plan storage p = s_plans[s.planId];
+        if (msg.sender != s.subscriber) revert DecentralizedSubscriptionService__NotSubscriptionOwner();
+        if (s.status != SubscriptionStatus.Lapsed) revert DecentralizedSubscriptionService__SubscriptionNotLapsed();
+        if (p.isActive == false) revert DecentralizedSubscriptionService__PlanNotActive();
+        // Reactivation carries forward any unspent balance from the lapsed subscription,
+        // so the user only needs to deposit enough to bring (existing + deposit) >= price.
+        if (depositAmount + s.balance < p.price) revert DecentralizedSubscriptionService__InsufficientDeposit();
+
+        // Effects
+        s_providerEarnings[p.provider][p.token] += p.price;
+        s.status = SubscriptionStatus.Active;
+        s.balance = s.balance + depositAmount - p.price;
+        s.nextPaymentDue = block.timestamp + p.interval;
+
+        _addToActiveArray(subscriptionId);
+
+        // Interactions
+        IERC20 planToken = IERC20(p.token);
+        uint256 balanceBefore = planToken.balanceOf(address(this));
+        SafeERC20.safeTransferFrom(planToken, msg.sender, address(this), depositAmount);
+        if (planToken.balanceOf(address(this)) - balanceBefore != depositAmount) {
+            revert DecentralizedSubscriptionService__FeeOnTransferNotSupported();
+        }
+
+        emit SubscriptionReactivated(subscriptionId, depositAmount);
+    }
 
     //// CHAINLINK FUNCTIONS ////
     function checkUpkeep(bytes calldata) external view override returns (bool upkeepNeeded, bytes memory performData) {}
