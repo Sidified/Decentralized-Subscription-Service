@@ -299,6 +299,29 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
     // INTERNAL LOGIC EXPOSED AS EXTERNAL (for try/catch isolation)
     function _renewSubscription(uint256 subscriptionId) external {
         // Only callable by this contract (self-external-call pattern)
+        if (msg.sender != address(this)) revert DecentralizedSubscriptionService__OnlySelfCallable();
+        _validateSubscriptionId(subscriptionId);
+        Subscription storage s = s_subscriptions[subscriptionId];
+        if (s.status != SubscriptionStatus.Active) return;
+        if (s.nextPaymentDue > block.timestamp) return;
+
+        Plan storage p = s_plans[s.planId];
+        if (s.balance >= p.price) {
+        // Renew: debit subscription, credit provider, advance due date by interval
+        // so Chainlink lateness doesn't drift the schedule.
+            s.balance -= p.price;
+            s.nextPaymentDue += p.interval;
+            s_providerEarnings[p.provider][p.token] += p.price;
+
+            emit SubscriptionRenewed(subscriptionId, p.price, s.balance, s.nextPaymentDue);
+        } else {
+        // Lapse: status change + remove from active array. Balance is preserved
+        // for reactivate (carry-forward) or cancel (refund).
+            s.status = SubscriptionStatus.Lapsed;
+            _removeFromActiveArray(subscriptionId);
+
+            emit SubscriptionLapsed(subscriptionId);
+        }
     }
 
     //// INTERNAL FUNCTIONS ////
