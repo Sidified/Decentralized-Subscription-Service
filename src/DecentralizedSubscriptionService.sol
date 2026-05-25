@@ -294,7 +294,17 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
     //// CHAINLINK FUNCTIONS ////
     function checkUpkeep(bytes calldata) external view override returns (bool upkeepNeeded, bytes memory performData) {}
 
-    function performUpkeep(bytes calldata performData) external override {}
+    function performUpkeep(bytes calldata performData) external override nonReentrant {
+        uint256[] memory subscriptionIds = abi.decode(performData, (uint256[]));
+        for (uint256 i = 0; i < subscriptionIds.length; i++) {
+            try this._renewSubscription(subscriptionIds[i]) {
+            // success — _renewSubscription emitted its own event
+            }
+            catch {
+                emit RenewalFailed(subscriptionIds[i]);
+            }
+        }
+    }
 
     // INTERNAL LOGIC EXPOSED AS EXTERNAL (for try/catch isolation)
     function _renewSubscription(uint256 subscriptionId) external {
@@ -307,16 +317,16 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
 
         Plan storage p = s_plans[s.planId];
         if (s.balance >= p.price) {
-        // Renew: debit subscription, credit provider, advance due date by interval
-        // so Chainlink lateness doesn't drift the schedule.
+            // Renew: debit subscription, credit provider, advance due date by interval
+            // so Chainlink lateness doesn't drift the schedule.
             s.balance -= p.price;
             s.nextPaymentDue += p.interval;
             s_providerEarnings[p.provider][p.token] += p.price;
 
             emit SubscriptionRenewed(subscriptionId, p.price, s.balance, s.nextPaymentDue);
         } else {
-        // Lapse: status change + remove from active array. Balance is preserved
-        // for reactivate (carry-forward) or cancel (refund).
+            // Lapse: status change + remove from active array. Balance is preserved
+            // for reactivate (carry-forward) or cancel (refund).
             s.status = SubscriptionStatus.Lapsed;
             _removeFromActiveArray(subscriptionId);
 
