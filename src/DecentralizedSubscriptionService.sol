@@ -77,7 +77,7 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
         SubscriptionStatus status;
     }
 
-    //// STATE VARIABLE ////
+    //// STATE VARIABLES ////
 
     mapping(uint256 => Plan) private s_plans;
     mapping(uint256 => Subscription) private s_subscriptions;
@@ -196,12 +196,7 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
 
         // Interactions
         IERC20 planToken = IERC20(p.token);
-        uint256 balanceBefore = planToken.balanceOf(address(this));
-        SafeERC20.safeTransferFrom(planToken, msg.sender, address(this), depositAmount);
-        if (planToken.balanceOf(address(this)) - balanceBefore != depositAmount) {
-            revert DecentralizedSubscriptionService__FeeOnTransferNotSupported();
-        }
-
+        _pullTokensWithFotCheck(planToken, msg.sender, depositAmount);
         emit SubscriptionCreated(newSubscriptionId, msg.sender, planId, depositAmount);
     }
 
@@ -219,11 +214,7 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
         // Interactions
         Plan storage p = s_plans[s.planId];
         IERC20 planToken = IERC20(p.token);
-        uint256 balanceBefore = planToken.balanceOf(address(this));
-        SafeERC20.safeTransferFrom(planToken, msg.sender, address(this), amount);
-        if (planToken.balanceOf(address(this)) - balanceBefore != amount) {
-            revert DecentralizedSubscriptionService__FeeOnTransferNotSupported();
-        }
+        _pullTokensWithFotCheck(planToken, msg.sender, amount);
 
         emit SubscriptionToppedUp(subscriptionId, amount, s.balance);
     }
@@ -232,10 +223,12 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
         // Checks
         _validateSubscriptionId(subscriptionId);
         Subscription storage s = s_subscriptions[subscriptionId];
+        Plan storage p = s_plans[s.planId];
         if (s.subscriber != msg.sender) revert DecentralizedSubscriptionService__NotSubscriptionOwner();
         if (s.status == SubscriptionStatus.Cancelled) {
             revert DecentralizedSubscriptionService__SubscriptionAlreadyCancelled();
         }
+        
 
         // Effects
         if (s.status == SubscriptionStatus.Active) {
@@ -252,7 +245,6 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
 
         // Interactions
         if (balance != 0) {
-            Plan storage p = s_plans[s.planId];
             IERC20 planToken = IERC20(p.token);
             SafeERC20.safeTransfer(planToken, msg.sender, balance);
         }
@@ -282,11 +274,7 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
 
         // Interactions
         IERC20 planToken = IERC20(p.token);
-        uint256 balanceBefore = planToken.balanceOf(address(this));
-        SafeERC20.safeTransferFrom(planToken, msg.sender, address(this), depositAmount);
-        if (planToken.balanceOf(address(this)) - balanceBefore != depositAmount) {
-            revert DecentralizedSubscriptionService__FeeOnTransferNotSupported();
-        }
+        _pullTokensWithFotCheck(planToken, msg.sender, depositAmount);
 
         emit SubscriptionReactivated(subscriptionId, depositAmount);
     }
@@ -363,9 +351,9 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
 
     /// @dev Pull tokens from `from` into the contract, reverting if the
     ///      received amount differs from `amount` (fee-on-transfer detection).
-    function _pullTokensWithFotCheck(address token, address from, uint256 amount) internal {
-        uint256 balanceBefore = IERC20(token).balanceOf(address(this));
-        SafeERC20.safeTransferFrom(IERC20(token), from, address(this), amount);
+    function _pullTokensWithFotCheck(IERC20 token, address from, uint256 amount) internal {
+        uint256 balanceBefore = token.balanceOf(address(this));
+        SafeERC20.safeTransferFrom(token, from, address(this), amount);
         if (IERC20(token).balanceOf(address(this)) - balanceBefore != amount) {
             revert DecentralizedSubscriptionService__FeeOnTransferNotSupported();
         }
@@ -411,16 +399,27 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
     }
 
     //// VIEW FUNCTIONS ////
-    function getPlan(uint256 planId) public view returns (Plan memory) {
+    function getPlan(uint256 planId) external view returns (Plan memory) {
+        _validatePlanId(planId);
         return s_plans[planId];
     }
 
-    function getSubscription(uint256 subscriptionId) external view returns (Subscription memory) {}
+    function getSubscription(uint256 subscriptionId) external view returns (Subscription memory) {
+        _validateSubscriptionId(subscriptionId);
+        return s_subscriptions[subscriptionId];
+    }
 
-    function getProviderEarnings(address provider, address token) external view returns (uint256) {}
+    function getProviderEarnings(address provider, address token) external view returns (uint256) {
+        return s_providerEarnings[provider][token];
+    }
 
-    function getActiveSubscriptionsCount() external view returns (uint256) {}
+    function getActiveSubscriptionsCount() external view returns (uint256) {
+        return s_activeSubscriptionIds.length;
+    }
 
-    function getUserSubscriptionId(address user, uint256 planId) external view returns (uint256) {}
+    function getUserSubscriptionId(address user, uint256 planId) external view returns (uint256) {
+        _validatePlanId(planId);
+        return s_userPlanToSubscriptionId[user][planId];
+    }
 }
 
