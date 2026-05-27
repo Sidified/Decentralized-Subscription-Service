@@ -42,7 +42,7 @@ contract DecentralizedSubscriptionServiceTest is Test {
     ////// PROVIDERS TESTS //////
     /////////////////////////////
 
-    //// TESTS FOR REGITER PLAN ///// RegisterPlan_
+    //// TESTS FOR REGITER PLAN /////
 
     function test_Provider_RegisterPlan_RevertsIfInvalidToken() external {
         vm.expectRevert(DecentralizedSubscriptionService.DecentralizedSubscriptionService__InvalidTokenAddress.selector);
@@ -142,5 +142,76 @@ contract DecentralizedSubscriptionServiceTest is Test {
         dsc.registerPlan(address(token), PRICE_TWO, INTERVAL_TWO, "Bob Plan");
         assert(dsc.getProviderPlanIds(alice).length == 1);
         assert(bobPlanId == 2);
+    }
+
+    //// TESTS FOR DISABLE PLAN /////
+
+    function test_Provider_DisablePlan_RevertsIfInvalidPlanId() external {
+        vm.startPrank(alice);
+
+        // planId = 0
+        vm.expectRevert(DecentralizedSubscriptionService.DecentralizedSubscriptionService__PlanDoesNotExist.selector);
+        dsc.disablePlan(0);
+
+        // planId out of range
+        vm.expectRevert(DecentralizedSubscriptionService.DecentralizedSubscriptionService__PlanDoesNotExist.selector);
+        dsc.disablePlan(999);
+
+        vm.stopPrank();
+    }
+
+    function test_Provider_DisablePlan_RevertsIfNotPlanOwner() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        // Bob tries to diable it
+        vm.expectRevert(DecentralizedSubscriptionService.DecentralizedSubscriptionService__NotPlanOwner.selector);
+        vm.prank(bob);
+        dsc.disablePlan(alicePlanId);
+    }
+
+    function test_Provider_DisablePlan_RevertsIfPlanAlreadyDisabled() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        // Alice disabled her plan
+        vm.prank(alice);
+        dsc.disablePlan(alicePlanId);
+
+        // Alice trying to disabled her same plan again
+        vm.expectRevert(DecentralizedSubscriptionService.DecentralizedSubscriptionService__PlanNotActive.selector);
+        vm.prank(alice);
+        dsc.disablePlan(alicePlanId);
+    }
+
+    function test_Provider_DisablePlan_SetsIsActiveToFalse() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        // Alice disabled her plan
+        vm.prank(alice);
+        dsc.disablePlan(alicePlanId);
+
+        DecentralizedSubscriptionService.Plan memory p = dsc.getPlan(alicePlanId);
+        assert(p.isActive == false);
+    }
+
+    function test_Provider_DisablePlan_EmitsPlanDisabledEvent() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        // Alice disabled her plan
+        vm.expectEmit(true, false, false, false, address(dsc));
+        emit DecentralizedSubscriptionService.PlanDisabled(alicePlanId);
+        vm.prank(alice);
+        dsc.disablePlan(alicePlanId);
     }
 }
