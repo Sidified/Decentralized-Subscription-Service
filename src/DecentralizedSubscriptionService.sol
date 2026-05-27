@@ -410,6 +410,10 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
         return s_providerPlanIds[provider];
     }
 
+    function getNextPlanId() external view returns (uint256) {
+        return s_nextPlanId;
+    }
+
     function getSubscription(uint256 subscriptionId) external view returns (Subscription memory) {
         _validateSubscriptionId(subscriptionId);
         return s_subscriptions[subscriptionId];
