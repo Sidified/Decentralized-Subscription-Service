@@ -80,6 +80,7 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
     //// STATE VARIABLES ////
 
     mapping(uint256 => Plan) private s_plans;
+    mapping(address => uint256[]) private s_providerPlanIds;
     mapping(uint256 => Subscription) private s_subscriptions;
     mapping(address => mapping(uint256 => uint256)) private s_userPlanToSubscriptionId;
     mapping(address => mapping(address => uint256)) private s_providerEarnings;
@@ -133,6 +134,8 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
         uint256 newPlanId = s_nextPlanId; // read first
         s_plans[newPlanId] =
             Plan({provider: msg.sender, token: token, price: price, interval: interval, isActive: true, name: name}); // write the plan
+
+        s_providerPlanIds[msg.sender].push(newPlanId);
 
         s_nextPlanId = newPlanId + 1; // increment the counter
 
@@ -228,7 +231,6 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
         if (s.status == SubscriptionStatus.Cancelled) {
             revert DecentralizedSubscriptionService__SubscriptionAlreadyCancelled();
         }
-        
 
         // Effects
         if (s.status == SubscriptionStatus.Active) {
@@ -402,6 +404,10 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
     function getPlan(uint256 planId) external view returns (Plan memory) {
         _validatePlanId(planId);
         return s_plans[planId];
+    }
+
+    function getProviderPlanIds(address provider) external view returns (uint256[] memory) {
+        return s_providerPlanIds[provider];
     }
 
     function getSubscription(uint256 subscriptionId) external view returns (Subscription memory) {
