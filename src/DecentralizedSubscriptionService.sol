@@ -431,6 +431,12 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
         return s_activeSubscriptionIds.length;
     }
 
+    /// @dev Exposed primarily for testing array integrity via swap-and-pop.
+    ///      Also useful for off-chain monitoring of upkeep state by Chainlink operators.
+    function getActiveSubscriptionIdAtIndex(uint256 index) external view returns (uint256) {
+        return s_activeSubscriptionIds[index];
+    }
+
     function getUserSubscriptionId(address user, uint256 planId) external view returns (uint256) {
         _validatePlanId(planId);
         return s_userPlanToSubscriptionId[user][planId];

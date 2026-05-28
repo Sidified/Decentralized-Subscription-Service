@@ -705,4 +705,201 @@ contract DecentralizedSubscriptionServiceTest is Test {
             "token balace of contract did not updated correctly"
         );
     }
+
+    //// TESTS FOR CANCEL SUBSCRIPTION /////
+
+    // TODO: Write test_User_CancelSub_HappyPathOnLapsedSubscription
+    // (Defer until performUpkeep test machinery exists so we can easily generate a Lapsed state)
+
+    function test_User_CancelSub_RevertIfInvalidSubId() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 randomSubId = 999;
+        // Bob subscribe to Alice's plan
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        vm.stopPrank();
+
+        vm.expectRevert(
+            DecentralizedSubscriptionService.DecentralizedSubscriptionService__SubscriptionDoesNotExist.selector
+        );
+        vm.prank(bob);
+        dsc.cancelSubscription(randomSubId);
+    }
+
+    function test_User_CancelSub_RevertIfNotOwner() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+        // Bob subscribe to Alice's plan
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        vm.stopPrank();
+
+        vm.expectRevert(
+            DecentralizedSubscriptionService.DecentralizedSubscriptionService__NotSubscriptionOwner.selector
+        );
+        vm.prank(charlie);
+        dsc.cancelSubscription(bobSubscriptionId);
+    }
+
+    function test_User_CancelSub_RevertIfAlreadyCancelled() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+        // Bob subscribe to Alice's plan
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        vm.stopPrank();
+
+        // Cancel the subscription
+        vm.prank(bob);
+        dsc.cancelSubscription(bobSubscriptionId);
+
+        // Try to cancel the subscription again
+        vm.expectRevert(
+            DecentralizedSubscriptionService.DecentralizedSubscriptionService__SubscriptionAlreadyCancelled.selector
+        );
+        vm.prank(bob);
+        dsc.cancelSubscription(bobSubscriptionId);
+    }
+
+    function test_User_CancelSub_HappyPath() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+        // Bob subscribe to Alice's plan
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_TWO);
+        dsc.subscribe(alicePlanId, PRICE_TWO);
+        vm.stopPrank();
+
+        // Pre-cancel state captures
+        DecentralizedSubscriptionService.Subscription memory s = dsc.getSubscription(bobSubscriptionId);
+        uint256 balance = s.balance;
+        uint256 activeSubCountBefore = dsc.getActiveSubscriptionsCount();
+
+        uint256 bobTokenBefore = token.balanceOf(bob);
+        uint256 contractTokenBefore = token.balanceOf(address(dsc));
+        uint256 providerEarningsBefore = dsc.getProviderEarnings(alice, address(token));
+
+        // Cancel the subscription
+        vm.expectEmit(true, false, false, true, address(dsc));
+        emit DecentralizedSubscriptionService.SubscriptionCancelled(bobSubscriptionId, balance);
+        vm.prank(bob);
+        dsc.cancelSubscription(bobSubscriptionId);
+
+        // Post-cancel state captures
+        DecentralizedSubscriptionService.Subscription memory sA = dsc.getSubscription(bobSubscriptionId);
+        uint256 balanceA = sA.balance;
+        uint256 activeSubCountAfter = dsc.getActiveSubscriptionsCount();
+
+        // Internal State Assertions
+        assertTrue(
+            sA.status == DecentralizedSubscriptionService.SubscriptionStatus.Cancelled,
+            "Status did not change to Cancelled"
+        );
+        assertEq(dsc.getUserSubscriptionId(bob, alicePlanId), 0, "subscription not removed"); // Updated duplicate function name here
+        assert(balanceA == 0);
+        assertEq(activeSubCountBefore - activeSubCountAfter, 1, "active subscription count not changed");
+
+        // Token Movement & Earnings Assertions
+        assertEq(token.balanceOf(bob), bobTokenBefore + balance, "Bob did not receive refund");
+        assertEq(token.balanceOf(address(dsc)), contractTokenBefore - balance, "Contract balance did not decrease");
+        assertEq(
+            dsc.getProviderEarnings(alice, address(token)),
+            providerEarningsBefore,
+            "Provider earnings should not change on cancel"
+        );
+    }
+
+    function test_User_CancelSub_HappyPathWithZeroBalace() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+        // Bob subscribe to Alice's plan
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        vm.stopPrank();
+
+        DecentralizedSubscriptionService.Subscription memory s = dsc.getSubscription(bobSubscriptionId);
+        uint256 balance = s.balance;
+
+        // Cancel the subscription
+        vm.expectEmit(true, false, false, true, address(dsc));
+        emit DecentralizedSubscriptionService.SubscriptionCancelled(bobSubscriptionId, balance);
+        vm.prank(bob);
+        dsc.cancelSubscription(bobSubscriptionId);
+
+        assert(balance == 0);
+    }
+
+    function test_User_CancelSub_SwapAndPopIntegrity() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        // Give them all allowance
+        vm.prank(alice);
+        token.approve(address(dsc), PRICE_ONE);
+        vm.prank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        vm.prank(charlie);
+        token.approve(address(dsc), PRICE_ONE);
+
+        // Array should look like: [sub1, sub2, sub3]
+
+        vm.prank(alice);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        uint256 sub1 = dsc.getUserSubscriptionId(alice, alicePlanId); // Index 0
+
+        vm.prank(bob);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        uint256 sub2 = dsc.getUserSubscriptionId(bob, alicePlanId); // Index 1 (The Middle)
+
+        vm.prank(charlie);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        uint256 sub3 = dsc.getUserSubscriptionId(charlie, alicePlanId); // Index 2 (The Last)
+
+        // Sanity check before cancellation
+        assertEq(dsc.getActiveSubscriptionsCount(), 3, "Should have 3 active subs");
+        assertEq(dsc.getActiveSubscriptionIdAtIndex(1), sub2, "Bob should be in the middle");
+
+        // Cancel the middle subscription (Bob's)
+        vm.prank(bob);
+        dsc.cancelSubscription(sub2);
+
+        // The Swap and Pop
+        // Expected Array: [sub1, sub3]
+
+        // Check 1: The length shrank by exactly 1
+        assertEq(dsc.getActiveSubscriptionsCount(), 2, "Length did not shrink correctly");
+
+        // Check 2: The first item (Alice) was completely untouched
+        assertEq(dsc.getActiveSubscriptionIdAtIndex(0), sub1, "Index 0 was corrupted");
+
+        // Check 3: The crucial swap.
+        // Charlie (sub3) should have been moved from the end (Index 2) into Bob's old spot (Index 1)
+        assertEq(dsc.getActiveSubscriptionIdAtIndex(1), sub3, "Swap-and-pop failed to move the last item");
+    }
 }
