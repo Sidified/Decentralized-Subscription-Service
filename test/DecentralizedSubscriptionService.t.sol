@@ -214,4 +214,102 @@ contract DecentralizedSubscriptionServiceTest is Test {
         vm.prank(alice);
         dsc.disablePlan(alicePlanId);
     }
+
+    //// TESTS FOR WITHDRAW PROVIDERS EARNING /////
+
+    function test_Provider_Withdraw_RevertsIfNoEarnings() external {
+        vm.expectRevert(
+            DecentralizedSubscriptionService.DecentralizedSubscriptionService__NoEarningsToWithdraw.selector
+        );
+        vm.prank(alice);
+        dsc.withdrawProviderEarnings(address(token));
+    }
+
+    function test_Provider_Withdraw_SuccessfulHappyPath() external {
+        // Alice registers the plan first
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "My Plan");
+        uint256 planId = dsc.getProviderPlanIds(alice)[0];
+
+        // Bob subscribes to Alice's plan
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(planId, PRICE_ONE);
+        vm.stopPrank();
+
+        uint256 providerEarningBefore = token.balanceOf(alice);
+        uint256 contractTokenBalanceBefore = token.balanceOf(address(dsc));
+
+        vm.expectEmit(true, true, false, true, address(dsc));
+        emit DecentralizedSubscriptionService.ProviderEarningsWithdrawn(alice, address(token), PRICE_ONE);
+        vm.prank(alice);
+        dsc.withdrawProviderEarnings(address(token));
+
+        uint256 providerEarningAfter = token.balanceOf(alice);
+        uint256 contractTokenBalanceAfter = token.balanceOf(address(dsc));
+
+        assertEq(providerEarningAfter - providerEarningBefore, PRICE_ONE, "Withdrawn amount is not correct");
+        assertEq(
+            contractTokenBalanceBefore - contractTokenBalanceAfter, PRICE_ONE, "Contract token balace is not correct"
+        );
+    }
+
+    function test_Provider_Withdraw_ZeroesEarningsAndPreventsDoubleWithdraw() external {
+        // Alice registers the plan first
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "My Plan");
+        uint256 planId = dsc.getProviderPlanIds(alice)[0];
+
+        // Bob subscribes to Alice's plan
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(planId, PRICE_ONE);
+        vm.stopPrank();
+
+        // Alice withdraws her earnings
+        vm.prank(alice);
+        dsc.withdrawProviderEarnings(address(token));
+
+        // Alice withdraws her earnings again
+        vm.expectRevert(
+            DecentralizedSubscriptionService.DecentralizedSubscriptionService__NoEarningsToWithdraw.selector
+        );
+        vm.prank(alice);
+        dsc.withdrawProviderEarnings(address(token));
+    }
+
+    function test_Provider_Withdraw_OnlyWithdrawsSpecifiedToken() external {
+        // Alice registers the plan with token(A)
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "My Plan");
+        uint256 planIdA = dsc.getProviderPlanIds(alice)[0];
+
+        MockERC20 tokenB = new MockERC20("Test TokenB", "TSTB");
+        // Alice registers the second plan with tokenB
+        vm.prank(alice);
+        dsc.registerPlan(address(tokenB), PRICE_TWO, INTERVAL_TWO, "My PlanB");
+        uint256 planIdB = dsc.getProviderPlanIds(alice)[1];
+
+        // different users subscribe to each
+        // Bob subscribes to Alice's plan A
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(planIdA, PRICE_ONE);
+        vm.stopPrank();
+
+        // Charlie subscribes to Alice's plan B
+        tokenB.mint(charlie, STARTING_TOKEN_BALANCE);
+        vm.startPrank(charlie);
+        tokenB.approve(address(dsc), PRICE_TWO);
+        dsc.subscribe(planIdB, PRICE_TWO);
+        vm.stopPrank();
+
+        // Alice withdraws her token(A) earnings
+        vm.prank(alice);
+        dsc.withdrawProviderEarnings(address(token));
+
+        // assert token A earnings now 0, token B earnings unchanged
+        assertEq(dsc.getProviderEarnings(alice, address(token)), 0, "token(A) earnings is not zero");
+        assertEq(dsc.getProviderEarnings(alice, address(tokenB)), PRICE_TWO, "tokenB balance is not equals PRICE_TWO ");
+    }
 }
