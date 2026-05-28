@@ -517,4 +517,192 @@ contract DecentralizedSubscriptionServiceTest is Test {
         assert(charlieSubscriptionIdA == 1);
         assert(charlieSubscriptionIdB == 2);
     }
+
+    //// TESTS FOR TOPUP /////
+
+    function test_User_TopUp_RevertsIfInvalidSubscriptionId() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        // Bob subscribe to Alice's plan
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        vm.stopPrank();
+
+        uint256 randomSubId = 999;
+
+        vm.expectRevert(
+            DecentralizedSubscriptionService.DecentralizedSubscriptionService__SubscriptionDoesNotExist.selector
+        );
+        vm.prank(bob);
+        dsc.topUp(randomSubId, PRICE_TWO);
+    }
+
+    function test_User_TopUp_RevertsIfNotOwner() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+        // Bob subscribe to Alice's plan
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        vm.stopPrank();
+
+        vm.expectRevert(
+            DecentralizedSubscriptionService.DecentralizedSubscriptionService__NotSubscriptionOwner.selector
+        );
+        vm.prank(charlie);
+        dsc.topUp(bobSubscriptionId, PRICE_TWO);
+    }
+
+    function test_User_TopUp_RevertsIfSubscriptionNotActive() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+        // Bob subscribe to Alice's plan
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        vm.stopPrank();
+
+        // Bob cancels his subscription
+        vm.prank(bob);
+        dsc.cancelSubscription(bobSubscriptionId);
+
+        vm.prank(bob);
+        token.approve(address(dsc), PRICE_TWO);
+
+        vm.expectRevert(
+            DecentralizedSubscriptionService.DecentralizedSubscriptionService__SubscriptionNotActive.selector
+        );
+        vm.prank(bob);
+        dsc.topUp(bobSubscriptionId, PRICE_TWO);
+    }
+
+    function test_User_TopUp_RevertsIfTopUpAmountIsZero() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+        // Bob subscribe to Alice's plan
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        vm.stopPrank();
+
+        vm.prank(bob);
+        token.approve(address(dsc), PRICE_TWO);
+
+        vm.expectRevert(DecentralizedSubscriptionService.DecentralizedSubscriptionService__AmountMustBeNonZero.selector);
+        vm.prank(bob);
+        dsc.topUp(bobSubscriptionId, 0);
+    }
+
+    function test_User_TopUp_HappyPath() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+        // Bob subscribe to Alice's plan
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        vm.stopPrank();
+
+        vm.prank(bob);
+        token.approve(address(dsc), PRICE_TWO);
+
+        DecentralizedSubscriptionService.Subscription memory s = dsc.getSubscription(bobSubscriptionId);
+        uint256 balanceBefore = s.balance;
+        uint256 tokenBalanceOfContractBefore = token.balanceOf(address(dsc));
+
+        vm.expectEmit(true, false, false, true, address(dsc));
+        emit DecentralizedSubscriptionService.SubscriptionToppedUp(bobSubscriptionId, PRICE_TWO, s.balance + PRICE_TWO);
+        vm.prank(bob);
+        dsc.topUp(bobSubscriptionId, PRICE_TWO);
+
+        DecentralizedSubscriptionService.Subscription memory ss = dsc.getSubscription(bobSubscriptionId);
+        uint256 balanceAfter = ss.balance;
+        uint256 tokenBalanceOfContractAfter = token.balanceOf(address(dsc));
+
+        assertEq(balanceAfter - balanceBefore, PRICE_TWO, "balance did not updated correctly");
+        assertEq(
+            tokenBalanceOfContractAfter - tokenBalanceOfContractBefore,
+            PRICE_TWO,
+            "token balace of contract did not updated correctly"
+        );
+    }
+
+    function test_User_TopUp_TopUPActiveSubscriptionMultipleTimes() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+        // Bob subscribe to Alice's plan
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        vm.stopPrank();
+
+        vm.prank(bob);
+        token.approve(address(dsc), PRICE_TWO);
+
+        DecentralizedSubscriptionService.Subscription memory s = dsc.getSubscription(bobSubscriptionId);
+        uint256 balanceBefore = s.balance;
+        uint256 tokenBalanceOfContractBefore = token.balanceOf(address(dsc));
+
+        vm.expectEmit(true, false, false, true, address(dsc));
+        emit DecentralizedSubscriptionService.SubscriptionToppedUp(bobSubscriptionId, PRICE_TWO, s.balance + PRICE_TWO);
+        vm.prank(bob);
+        dsc.topUp(bobSubscriptionId, PRICE_TWO);
+
+        DecentralizedSubscriptionService.Subscription memory ss = dsc.getSubscription(bobSubscriptionId);
+        uint256 balanceAfter = ss.balance;
+        uint256 tokenBalanceOfContractAfter = token.balanceOf(address(dsc));
+
+        assertEq(balanceAfter - balanceBefore, PRICE_TWO, "balance did not updated correctly");
+        assertEq(
+            tokenBalanceOfContractAfter - tokenBalanceOfContractBefore,
+            PRICE_TWO,
+            "token balace of contract did not updated correctly"
+        );
+
+        vm.prank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+
+        DecentralizedSubscriptionService.Subscription memory a = dsc.getSubscription(bobSubscriptionId);
+        uint256 balanceBeforeA = a.balance;
+        uint256 tokenBalanceOfContractBeforeA = token.balanceOf(address(dsc));
+
+        vm.expectEmit(true, false, false, true, address(dsc));
+        emit DecentralizedSubscriptionService.SubscriptionToppedUp(bobSubscriptionId, PRICE_ONE, a.balance + PRICE_ONE);
+        vm.prank(bob);
+        dsc.topUp(bobSubscriptionId, PRICE_ONE);
+
+        DecentralizedSubscriptionService.Subscription memory aa = dsc.getSubscription(bobSubscriptionId);
+        uint256 balanceAfterA = aa.balance;
+        uint256 tokenBalanceOfContractAfterA = token.balanceOf(address(dsc));
+
+        assertEq(balanceAfterA - balanceBeforeA, PRICE_ONE, "balance did not updated correctly");
+        assertEq(
+            tokenBalanceOfContractAfterA - tokenBalanceOfContractBeforeA,
+            PRICE_ONE,
+            "token balace of contract did not updated correctly"
+        );
+    }
 }
