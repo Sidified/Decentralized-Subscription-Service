@@ -902,4 +902,348 @@ contract DecentralizedSubscriptionServiceTest is Test {
         // Charlie (sub3) should have been moved from the end (Index 2) into Bob's old spot (Index 1)
         assertEq(dsc.getActiveSubscriptionIdAtIndex(1), sub3, "Swap-and-pop failed to move the last item");
     }
+
+    //// TESTS FOR REACTIVATE SUBSCRIPTION /////
+
+    function test_User_Reactivate_RevertIfInvalidSubId() external {
+        // Alice registers a plan
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 randomSubId = 999;
+        uint256 depositAmount = PRICE_ONE;
+
+        // Try to reactivate a subscription that doesn't exist
+        vm.expectRevert(
+            DecentralizedSubscriptionService.DecentralizedSubscriptionService__SubscriptionDoesNotExist.selector
+        );
+        vm.prank(bob);
+        dsc.reactivate(randomSubId, depositAmount);
+    }
+
+    function test_User_Reactivate_RevertIfNotOwner() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+
+        // Bob subscribes to Alice's plan
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        vm.stopPrank();
+
+        uint256 depositAmount = PRICE_ONE;
+
+        // Charlie tries to hijack Bob's subscription
+        vm.expectRevert(
+            DecentralizedSubscriptionService.DecentralizedSubscriptionService__NotSubscriptionOwner.selector
+        );
+        vm.prank(charlie);
+        dsc.reactivate(bobSubscriptionId, depositAmount);
+    }
+
+    function test_User_Reactivate_RevertIfNotLapsed() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+
+        // Bob subscribes to Alice's plan
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        vm.stopPrank();
+
+        // At this point, the subscription status is Active.
+        // It must be Lapsed to be reactivated.
+        uint256 depositAmount = PRICE_ONE;
+
+        vm.expectRevert(
+            DecentralizedSubscriptionService.DecentralizedSubscriptionService__SubscriptionNotLapsed.selector
+        );
+        vm.prank(bob);
+        dsc.reactivate(bobSubscriptionId, depositAmount);
+    }
+
+    function test_User_Reactivate_HappyPath() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+
+        // Bob subscribes to Alice's plan
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        vm.stopPrank();
+
+        // Fast forward the time past the interval
+        vm.warp(block.timestamp + INTERVAL_ONE + 1);
+
+        // Perform the upkeep
+        // Bob's balance is now less than the Plan Price so his subscription will be lapsed
+        (, bytes memory performData) = dsc.checkUpkeep("");
+        dsc.performUpkeep(performData);
+
+        // --- PRE-REACTIVATE STATE CAPTURE ---
+        uint256 providerEarningsBefore = dsc.getProviderEarnings(alice, address(token));
+        uint256 contractTokenBefore = token.balanceOf(address(dsc));
+        uint256 bobTokenBefore = token.balanceOf(bob);
+        uint256 activeArrayCountBefore = dsc.getActiveSubscriptionsCount();
+
+        // Now Bob's subscription is in lapsed status.
+        // Bob reactivates the subscription.
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+
+        // 1. ASSERT EVENT
+        vm.expectEmit(true, false, false, true, address(dsc));
+        emit DecentralizedSubscriptionService.SubscriptionReactivated(bobSubscriptionId, PRICE_ONE);
+        dsc.reactivate(bobSubscriptionId, PRICE_ONE);
+        vm.stopPrank();
+
+        // POST-REACTIVATE STATE CAPTURE
+        DecentralizedSubscriptionService.Subscription memory sAfter = dsc.getSubscription(bobSubscriptionId);
+        uint256 activeArrayCountAfter = dsc.getActiveSubscriptionsCount();
+
+        // INTERNAL LOGIC ASSERTIONS
+        // 2. Status flips to Active
+        assertTrue(
+            sAfter.status == DecentralizedSubscriptionService.SubscriptionStatus.Active,
+            "Status did not change to Active"
+        );
+
+        // 3. Balance carries forward (0 previous + PRICE_ONE deposit - PRICE_ONE price = 0)
+        assertEq(sAfter.balance, 0, "Balance carry-forward math incorrect");
+
+        // 4. nextPaymentDue resets
+        assertEq(sAfter.nextPaymentDue, block.timestamp + INTERVAL_ONE, "Due date not reset");
+
+        // 5. Added back to active array (Count increases, and it is pushed to the very end)
+        assertEq(activeArrayCountAfter - activeArrayCountBefore, 1, "Not added back to active array");
+        assertEq(
+            dsc.getActiveSubscriptionIdAtIndex(activeArrayCountAfter - 1),
+            bobSubscriptionId,
+            "Wrong ID pushed to active array"
+        );
+
+        // ACCOUNTING ASSERTIONS
+        // 6. Provider earnings credited
+        assertEq(
+            dsc.getProviderEarnings(alice, address(token)) - providerEarningsBefore,
+            PRICE_ONE,
+            "Provider earnings not credited"
+        );
+
+        // 7. Token transfers actually happened
+        assertEq(bobTokenBefore - token.balanceOf(bob), PRICE_ONE, "Tokens not pulled from Bob");
+        assertEq(token.balanceOf(address(dsc)) - contractTokenBefore, PRICE_ONE, "Tokens not sent to contract");
+    }
+
+    function test_User_Reactivate_PlanDisablesAfterTheSubscriptionLapsed() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+        // Bob subscribes to Alice's plan
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        vm.stopPrank();
+
+        // Fast forward the time past the interval
+        vm.warp(block.timestamp + INTERVAL_ONE + 1);
+
+        // Perform the upkeep
+        // Bob's balance is now less than the Plan Price so his subscription will be lapsed
+        (, bytes memory performData) = dsc.checkUpkeep("");
+        dsc.performUpkeep(performData);
+
+        // Now the Bob's subscription will be in lapse status
+
+        // Alice disabled her before plan
+        vm.prank(alice);
+        dsc.disablePlan(alicePlanId);
+
+        // Bob try to reactivates the subscription.
+        // This will revert
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        vm.expectRevert(DecentralizedSubscriptionService.DecentralizedSubscriptionService__PlanNotActive.selector);
+        dsc.reactivate(bobSubscriptionId, PRICE_ONE);
+        vm.stopPrank();
+    }
+
+    function test_User_Reactivate_BoundaryMath_ExactBalance() external {
+        // SETUP
+        // 1. Alice creates a plan for 10 Tokens
+        uint256 planPrice = 10e18; // Using realistic ERC20 decimals
+        uint256 alicePlanId = dsc.getNextPlanId();
+
+        vm.prank(alice);
+        dsc.registerPlan(address(token), planPrice, INTERVAL_ONE, "Alice Boundary Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+
+        // 2. Bob subscribes and intentionally deposits 13 Tokens (overpaying by 3)
+        uint256 overpayment = 3e18;
+        uint256 initialDeposit = planPrice + overpayment; // 13 Tokens
+
+        vm.startPrank(bob);
+        token.approve(address(dsc), initialDeposit);
+        dsc.subscribe(alicePlanId, initialDeposit);
+        vm.stopPrank();
+
+        // Verify Bob has a leftover balance of 3 Tokens
+        assertEq(dsc.getSubscription(bobSubscriptionId).balance, overpayment, "Initial overpayment not recorded");
+
+        // LAPSE THE SUBSCRIPTION
+        // Fast forward the time past the interval
+        vm.warp(block.timestamp + INTERVAL_ONE + 1);
+
+        // Perform the upkeep.
+        // Bob owes 10 tokens, but only has 3. He lapses.
+        (, bytes memory performData) = dsc.checkUpkeep("");
+        dsc.performUpkeep(performData);
+
+        assertTrue(
+            dsc.getSubscription(bobSubscriptionId).status == DecentralizedSubscriptionService.SubscriptionStatus.Lapsed,
+            "Subscription did not lapse"
+        );
+
+        // REACTIVATE (THE BOUNDARY TEST)
+        // Bob needs 10 tokens total to reactivate.
+        // He already has 3 tokens sitting in his balance.
+        // He should only need to deposit exactly 7 tokens.
+        uint256 exactReactivationDeposit = planPrice - overpayment; // 7 Tokens
+
+        vm.startPrank(bob);
+        token.approve(address(dsc), exactReactivationDeposit);
+
+        // This transaction should succeed (not revert!)
+        dsc.reactivate(bobSubscriptionId, exactReactivationDeposit);
+        vm.stopPrank();
+
+        // VERIFY BOUNDARY MATH
+        DecentralizedSubscriptionService.Subscription memory s = dsc.getSubscription(bobSubscriptionId);
+
+        // His balance should be perfectly drained to zero
+        assertEq(s.balance, 0, "Boundary math failed to resolve to exactly zero");
+
+        // His status should be active again
+        assertTrue(
+            s.status == DecentralizedSubscriptionService.SubscriptionStatus.Active,
+            "Failed to reactivate on exact boundary math"
+        );
+    }
+
+    function test_User_Reactivate_CarryForwardWithRemainder() external {
+        // SETUP
+        uint256 planPrice = 4e18; // Price = 4
+        uint256 alicePlanId = dsc.getNextPlanId();
+
+        vm.prank(alice);
+        dsc.registerPlan(address(token), planPrice, INTERVAL_ONE, "Alice Remainder Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+
+        // Bob subscribes and intentionally deposits 6 Tokens.
+        // Contract takes 4 for the first month.
+        // Bob's starting balance is exactly 2.
+        uint256 initialDeposit = 6e18;
+
+        vm.startPrank(bob);
+        token.approve(address(dsc), initialDeposit);
+        dsc.subscribe(alicePlanId, initialDeposit);
+        vm.stopPrank();
+
+        assertEq(dsc.getSubscription(bobSubscriptionId).balance, 2e18, "Initial balance should be 2");
+
+        // LAPSE THE SUBSCRIPTION
+        // Fast forward the time past the interval
+        vm.warp(block.timestamp + INTERVAL_ONE + 1);
+
+        // Perform the upkeep.
+        // Bob owes 4 tokens, but only has 2. He lapses.
+        (, bytes memory performData) = dsc.checkUpkeep("");
+        dsc.performUpkeep(performData);
+
+        // REACTIVATE (THE REMAINDER TEST)
+        // Bob deposits 3 tokens.
+        // Existing Balance (2) + Deposit (3) = 5 Tokens total.
+        // Plan Price is 4.
+        uint256 reactivateDeposit = 3e18;
+
+        vm.startPrank(bob);
+        token.approve(address(dsc), reactivateDeposit);
+
+        // This should succeed because 5 >= 4
+        dsc.reactivate(bobSubscriptionId, reactivateDeposit);
+        vm.stopPrank();
+
+        // VERIFY ARITHMETIC
+        DecentralizedSubscriptionService.Subscription memory s = dsc.getSubscription(bobSubscriptionId);
+
+        // His balance should be 5 - 4 = 1
+        assertEq(s.balance, 1e18, "Carry-forward math failed to leave a remainder of 1");
+
+        // His status should be active again
+        assertTrue(
+            s.status == DecentralizedSubscriptionService.SubscriptionStatus.Active,
+            "Failed to reactivate with carry-forward remainder"
+        );
+    }
+
+    function test_User_Reactivate_RevertIfInsufficientCombinedDeposit() external {
+        // SETUP
+        uint256 planPrice = 4e18; // Price = 4
+        uint256 alicePlanId = dsc.getNextPlanId();
+
+        vm.prank(alice);
+        dsc.registerPlan(address(token), planPrice, INTERVAL_ONE, "Alice Insufficient Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+
+        // Bob subscribes and intentionally deposits 6 Tokens.
+        // Contract takes 4 for the first month.
+        // Bob's starting balance is exactly 2.
+        uint256 initialDeposit = 6e18;
+
+        vm.startPrank(bob);
+        token.approve(address(dsc), initialDeposit);
+        dsc.subscribe(alicePlanId, initialDeposit);
+        vm.stopPrank();
+
+        // LAPSE THE SUBSCRIPTION
+        // Fast forward the time past the interval
+        vm.warp(block.timestamp + INTERVAL_ONE + 1);
+
+        // Perform the upkeep.
+        // Bob owes 4 tokens, but only has 2. He lapses.
+        (, bytes memory performData) = dsc.checkUpkeep("");
+        dsc.performUpkeep(performData);
+
+        // REACTIVATE (THE REVERT TEST)
+        // Bob attempts to deposit 1 token.
+        // Existing Balance (2) + Deposit (1) = 3 Tokens total.
+        // Plan Price is 4. This should fail.
+        uint256 insufficientDeposit = 1e18;
+
+        vm.startPrank(bob);
+        token.approve(address(dsc), insufficientDeposit);
+
+        // Assert the exact custom error we expect
+        vm.expectRevert(DecentralizedSubscriptionService.DecentralizedSubscriptionService__InsufficientDeposit.selector);
+        dsc.reactivate(bobSubscriptionId, insufficientDeposit);
+        vm.stopPrank();
+    }
 }
