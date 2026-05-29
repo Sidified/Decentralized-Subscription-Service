@@ -1246,4 +1246,122 @@ contract DecentralizedSubscriptionServiceTest is Test {
         dsc.reactivate(bobSubscriptionId, insufficientDeposit);
         vm.stopPrank();
     }
+
+    /////////////////////////////
+    ////// CHAINLINK TESTS //////
+    /////////////////////////////
+
+    //// TESTS FOR CHECK-UPKEEP /////
+
+    function test_Chainlink_CheckUpkeep_ReturnFalseIfNoSubscriptions() external view {
+        // Catch the return values from the checkUpkeep
+        (bool upkeepNeeded, bytes memory performData) = dsc.checkUpkeep("");
+        uint256[] memory subscriptionIds = abi.decode(performData, (uint256[]));
+
+        assert(upkeepNeeded == false);
+        assertEq(subscriptionIds.length, 0, "SubscriptionId array length should be zero");
+    }
+
+    function test_Chainlink_CheckUpkeep_ReturnFalseIfNoSubscriptionsAreDue() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        // Bob subscribes to Alice's plan
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        vm.stopPrank();
+
+        // Charlie subscribes to Alice's plan
+        vm.startPrank(charlie);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        vm.stopPrank();
+
+        // We did not fast forwarded the time so the interval has not been passed for the subscription
+
+        // Catch the return values from the checkUpkeep
+        (bool upkeepNeeded, bytes memory performData) = dsc.checkUpkeep("");
+        uint256[] memory subscriptionIds = abi.decode(performData, (uint256[]));
+
+        assert(upkeepNeeded == false);
+        assertEq(subscriptionIds.length, 0, "SubscriptionId array length should be zero");
+    }
+
+    function test_Chainlink_CheckUpkeep_ReturnTrueForPartialDueSubscriptions() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 charlieSubscriptionId = dsc.getNextSubscriptionId();
+        // Charlie subscribes to Alice's plan
+        vm.startPrank(charlie);
+        token.approve(address(dsc), PRICE_TWO);
+        dsc.subscribe(alicePlanId, PRICE_TWO);
+        vm.stopPrank();
+
+        // Bob registers a plan
+        uint256 bobPlanId = dsc.getNextPlanId();
+        vm.prank(bob);
+        dsc.registerPlan(address(token), PRICE_TWO, INTERVAL_TWO, "Alice Plan");
+
+        // Charlie subscribes to Bob's plan
+        vm.startPrank(charlie);
+        token.approve(address(dsc), PRICE_TWO);
+        dsc.subscribe(bobPlanId, PRICE_TWO);
+        vm.stopPrank();
+
+        // Now we fast forward the time so that only the Alice's plan interval will pass
+        // Now only the Charlie's subscription with Alice's plan will get triggered inside checkUpkeep
+        vm.warp(block.timestamp + INTERVAL_ONE + 1);
+
+        // Catch the return values from the checkUpkeep
+        (bool upkeepNeeded, bytes memory performData) = dsc.checkUpkeep("");
+        uint256[] memory subscriptionIds = abi.decode(performData, (uint256[]));
+
+        assert(upkeepNeeded == true);
+        assertEq(subscriptionIds.length, 1, "SubscriptionId array length should be 1");
+        assertEq(subscriptionIds[0], charlieSubscriptionId, "Must have only Charlie's subscriptionId with Alice's plan");
+    }
+
+    function test_Chainlink_CheckUpkeep_ReturnTrueForAllSubscriptionsDue() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 charlieSubscriptionIdA = dsc.getNextSubscriptionId();
+        // Charlie subscribes to Alice's plan
+        vm.startPrank(charlie);
+        token.approve(address(dsc), PRICE_TWO);
+        dsc.subscribe(alicePlanId, PRICE_TWO);
+        vm.stopPrank();
+
+        // Bob registers a plan
+        uint256 bobPlanId = dsc.getNextPlanId();
+        vm.prank(bob);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_TWO, "Alice Plan");
+
+        uint256 charlieSubscriptionIdB = dsc.getNextSubscriptionId();
+        // Charlie subscribes to Bob's plan
+        vm.startPrank(charlie);
+        token.approve(address(dsc), PRICE_TWO);
+        dsc.subscribe(bobPlanId, PRICE_TWO);
+        vm.stopPrank();
+
+        // Now we fast forward the time so that both intervals will pass
+        vm.warp(block.timestamp + INTERVAL_TWO + 1);
+
+        // Catch the return values from the checkUpkeep
+        (bool upkeepNeeded, bytes memory performData) = dsc.checkUpkeep("");
+        uint256[] memory subscriptionIds = abi.decode(performData, (uint256[]));
+
+        assert(upkeepNeeded == true);
+        assertEq(subscriptionIds.length, 2, "SubscriptionId array length should be 2");
+        assertEq(subscriptionIds[0], charlieSubscriptionIdA, "Must have Charlie's subscriptionIdA at index 0");
+        assertEq(subscriptionIds[1], charlieSubscriptionIdB, "Must have Charlie's subscriptionIdA at index 1");
+    }
 }
