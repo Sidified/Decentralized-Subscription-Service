@@ -738,6 +738,46 @@ contract DecentralizedSubscriptionServiceTest is Test {
         vm.stopPrank();
     }
 
+    function test_User_TopUp_WorksOnActiveSubscriptionOfDisabledPlan() external {
+        // --- SETUP ---
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+
+        // Bob subscribes
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        vm.stopPrank();
+
+        // --- DISABLE PLAN ---
+        vm.prank(alice);
+        dsc.disablePlan(alicePlanId);
+
+        // Quick sanity check to ensure the plan is actually disabled
+        assertFalse(dsc.getPlan(alicePlanId).isActive, "Plan failed to disable");
+
+        // --- TOP UP (THE CORE TEST) ---
+        uint256 topUpAmount = PRICE_ONE;
+        uint256 balanceBefore = dsc.getSubscription(bobSubscriptionId).balance;
+
+        vm.startPrank(bob);
+        token.approve(address(dsc), topUpAmount);
+
+        // This should succeed silently without reverting
+        dsc.topUp(bobSubscriptionId, topUpAmount);
+        vm.stopPrank();
+
+        // --- ASSERTION ---
+        assertEq(
+            dsc.getSubscription(bobSubscriptionId).balance,
+            balanceBefore + topUpAmount,
+            "Top-up failed on disabled plan"
+        );
+    }
+
     //// TESTS FOR CANCEL SUBSCRIPTION /////
 
     // TODO: Write test_User_CancelSub_HappyPathOnLapsedSubscription
@@ -1738,6 +1778,54 @@ contract DecentralizedSubscriptionServiceTest is Test {
             dsc.getProviderEarnings(alice, address(token)),
             aliceEarningsBeforeReplay,
             "Alice was credited twice for the same renewal period"
+        );
+    }
+
+    function test_Chainlink_PerformUpkeep_RenewsExistingSubscriptionsOnDisabledPlan() external {
+        // --- SETUP ---
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+
+        // Bob subscribes with enough balance for the initial month PLUS one renewal
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE * 2);
+        dsc.subscribe(alicePlanId, PRICE_ONE * 2);
+        vm.stopPrank();
+
+        // --- DISABLE PLAN ---
+        vm.prank(alice);
+        dsc.disablePlan(alicePlanId);
+
+        // --- FAST FORWARD TIME ---
+        // Advance time so Bob's subscription is due for renewal
+        vm.warp(block.timestamp + INTERVAL_ONE);
+
+        // --- PRE-UPKEEP STATE CAPTURE ---
+        uint256 bobBalanceBefore = dsc.getSubscription(bobSubscriptionId).balance;
+        uint256 aliceEarningsBefore = dsc.getProviderEarnings(alice, address(token));
+
+        // --- EXECUTE UPKEEP ---
+        (, bytes memory performData) = dsc.checkUpkeep("");
+        dsc.performUpkeep(performData);
+
+        // --- POST-UPKEEP ASSERTIONS ---
+        DecentralizedSubscriptionService.Subscription memory bobSub = dsc.getSubscription(bobSubscriptionId);
+
+        // 1. Bob renewed successfully (balance deducted, due date advanced)
+        assertEq(bobSub.balance, bobBalanceBefore - PRICE_ONE, "Balance not deducted for disabled plan renewal");
+        assertEq(bobSub.nextPaymentDue, block.timestamp + INTERVAL_ONE, "Due date not advanced");
+        assertTrue(
+            bobSub.status == DecentralizedSubscriptionService.SubscriptionStatus.Active, "Status should remain Active"
+        );
+
+        // 2. Alice got paid despite the plan being disabled
+        assertEq(
+            dsc.getProviderEarnings(alice, address(token)),
+            aliceEarningsBefore + PRICE_ONE,
+            "Provider not credited for disabled plan renewal"
         );
     }
 

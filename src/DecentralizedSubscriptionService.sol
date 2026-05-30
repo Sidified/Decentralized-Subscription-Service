@@ -209,6 +209,9 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
         Subscription storage s = s_subscriptions[subscriptionId];
         if (s.subscriber != msg.sender) revert DecentralizedSubscriptionService__NotSubscriptionOwner();
         if (s.status != SubscriptionStatus.Active) revert DecentralizedSubscriptionService__SubscriptionNotActive();
+        // Note: We deliberately do NOT check plan.isActive here. Disabling a plan
+        // blocks new subscriptions and reactivations but does not affect existing
+        // active subscribers, who can continue to top up and renew.
         if (amount == 0) revert DecentralizedSubscriptionService__AmountMustBeNonZero();
 
         // Effects
@@ -331,6 +334,8 @@ contract DecentralizedSubscriptionService is ReentrancyGuard, AutomationCompatib
         if (s.nextPaymentDue > block.timestamp) return;
 
         Plan storage p = s_plans[s.planId];
+        // Note: We deliberately do NOT check plan.isActive. Existing subscriptions
+        // continue to renew even after a plan is disabled. See DESIGN.md.
         if (s.balance >= p.price) {
             // Renew: debit subscription, credit provider, advance due date by interval
             // so Chainlink lateness doesn't drift the schedule.
