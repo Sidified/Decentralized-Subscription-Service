@@ -1364,4 +1364,286 @@ contract DecentralizedSubscriptionServiceTest is Test {
         assertEq(subscriptionIds[0], charlieSubscriptionIdA, "Must have Charlie's subscriptionIdA at index 0");
         assertEq(subscriptionIds[1], charlieSubscriptionIdB, "Must have Charlie's subscriptionIdA at index 1");
     }
+
+    //// TESTS FOR CHECK-UPKEEP /////
+
+    function test_Chainlink_PerformUpkeep_AnyoneCanCallPerformUpkeep() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 charlieSubscriptionId = dsc.getNextSubscriptionId();
+        // Charlie subscribes to Alice's plan
+        vm.startPrank(charlie);
+        token.approve(address(dsc), PRICE_TWO);
+        dsc.subscribe(alicePlanId, PRICE_TWO);
+        vm.stopPrank();
+
+        // Now we fast forward the time so that the interval will pass
+        vm.warp(block.timestamp + INTERVAL_ONE);
+
+        // Catch the return values from the checkUpkeep
+        (, bytes memory performData) = dsc.checkUpkeep("");
+
+        // Bob is calling the performUpkeep
+        vm.startPrank(bob);
+        vm.expectEmit(true, false, false, true, address(dsc));
+        emit DecentralizedSubscriptionService.SubscriptionRenewed(
+            charlieSubscriptionId, PRICE_ONE, 0, block.timestamp + INTERVAL_ONE
+        );
+        dsc.performUpkeep(performData);
+        vm.stopPrank();
+    }
+
+    function test_Chainlink_PerformUpkeep_EmptyArrayShouldPassSilently() external {
+        // 1. Manually construct the exact empty array payload
+        // This isolates the test completely from checkUpkeep
+        bytes memory emptyPerformData = abi.encode(new uint256[](0));
+
+        // 2. Capture the state before
+        uint256 activeCountBefore = dsc.getActiveSubscriptionsCount();
+
+        // 3. Execute (If this reverts, the test fails automatically)
+        dsc.performUpkeep(emptyPerformData);
+
+        // 4. Prove that absolutely nothing changed in the contract state
+        assertEq(dsc.getActiveSubscriptionsCount(), activeCountBefore, "State was unexpectedly altered on empty upkeep");
+    }
+
+    function test_Chainlink_PerformUpkeep_RevertsOnMalformedCalldata() external {
+        // 1. Manually construct actual BAD calldata.
+        // The contract expects an encoded uint256[].
+        // We will encode a string instead. It will completely fail to decode.
+        bytes memory badPerformData = abi.encode("This is definitely not an array");
+
+        // 2. Tell Foundry that we EXPECT the transaction to revert.
+        vm.expectRevert();
+
+        // 3. Execute
+        dsc.performUpkeep(badPerformData);
+    }
+
+    function test_Chainlink_PerformUpkeep_HappyPath() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 charlieSubscriptionId = dsc.getNextSubscriptionId();
+        // Charlie subscribes to Alice's plan
+        vm.startPrank(charlie);
+        token.approve(address(dsc), PRICE_TWO);
+        dsc.subscribe(alicePlanId, PRICE_TWO);
+        vm.stopPrank();
+
+        // Now we fast forward the time so that the interval will pass
+        vm.warp(block.timestamp + INTERVAL_ONE);
+
+        // Catch the return values from the checkUpkeep
+        (, bytes memory performData) = dsc.checkUpkeep("");
+
+        // PRE-UPKEEP STATE CAPTURE
+        DecentralizedSubscriptionService.Subscription memory sBefore = dsc.getSubscription(charlieSubscriptionId);
+        uint256 providerEarningsBefore = dsc.getProviderEarnings(alice, address(token));
+        uint256 activeArrayCountBefore = dsc.getActiveSubscriptionsCount();
+
+        // Expect the event using dynamic due date calculation
+        vm.expectEmit(true, false, false, true, address(dsc));
+        emit DecentralizedSubscriptionService.SubscriptionRenewed(
+            charlieSubscriptionId, PRICE_ONE, sBefore.balance - PRICE_ONE, sBefore.nextPaymentDue + INTERVAL_ONE
+        );
+
+        // Execute Upkeep
+        dsc.performUpkeep(performData);
+
+        // POST-UPKEEP ASSERTIONS
+        DecentralizedSubscriptionService.Subscription memory sAfter = dsc.getSubscription(charlieSubscriptionId);
+
+        // 1. Balance correctly deducted
+        assertEq(sAfter.balance, sBefore.balance - PRICE_ONE, "Balance not deducted correctly");
+
+        // 2. Next payment due advanced properly (Anchored math)
+        assertEq(sAfter.nextPaymentDue, sBefore.nextPaymentDue + INTERVAL_ONE, "Due date not advanced");
+
+        // 3. Status is still Active
+        assertTrue(
+            sAfter.status == DecentralizedSubscriptionService.SubscriptionStatus.Active, "Status should remain active"
+        );
+
+        // 4. Provider earnings credited
+        assertEq(
+            dsc.getProviderEarnings(alice, address(token)),
+            providerEarningsBefore + PRICE_ONE,
+            "Provider not credited for renewal"
+        );
+
+        // 5. Active array count unchanged
+        assertEq(dsc.getActiveSubscriptionsCount(), activeArrayCountBefore, "Active array count changed unexpectedly");
+    }
+
+    function test_Chainlink_PerformUpkeep_InsufficientBalanceCausesLapse() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 charlieSubscriptionId = dsc.getNextSubscriptionId();
+        // Charlie subscribes to Alice's plan with a balance only for one interval
+        vm.startPrank(charlie);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        vm.stopPrank();
+
+        // Now we fast forward the time so that the interval will pass
+        vm.warp(block.timestamp + INTERVAL_ONE);
+
+        // Catch the return values from the checkUpkeep
+        (, bytes memory performData) = dsc.checkUpkeep("");
+
+        // Charlie's subscription will be lasped since he has no balance left
+        vm.expectEmit(true, false, false, false, address(dsc));
+        emit DecentralizedSubscriptionService.SubscriptionLapsed(charlieSubscriptionId);
+        dsc.performUpkeep(performData);
+    }
+
+    function test_Chainlink_PerformUpkeep_MixedBatchProcessesCorrectly() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+        // Charlie subscribes to Alice's plan with a balance for two intervals
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_TWO);
+        dsc.subscribe(alicePlanId, PRICE_TWO);
+        vm.stopPrank();
+
+        uint256 charlieSubscriptionId = dsc.getNextSubscriptionId();
+        // Charlie subscribes to Alice's plan with a balance only for one interval
+        vm.startPrank(charlie);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        vm.stopPrank();
+
+        // --- PRE-UPKEEP ASSERTIONS ---
+        assertEq(dsc.getActiveSubscriptionsCount(), 2, "Should have 2 active subscriptions before upkeep");
+
+        // Now we fast forward the time so that the first interval will pass
+        vm.warp(block.timestamp + INTERVAL_ONE);
+
+        // Catch the return values from the checkUpkeep
+        (, bytes memory performData) = dsc.checkUpkeep("");
+
+        // Execute the mixed batch
+        dsc.performUpkeep(performData);
+
+        // POST-UPKEEP ASSERTIONS
+
+        // 1. Array state changed correctly (shrank to 1)
+        assertEq(dsc.getActiveSubscriptionsCount(), 1, "Array did not shrink after Charlie lapsed");
+        assertEq(dsc.getActiveSubscriptionIdAtIndex(0), bobSubscriptionId, "Bob should remain in the active array");
+
+        // 2. Bob's individual state (The Renew Path)
+        DecentralizedSubscriptionService.Subscription memory bobSub = dsc.getSubscription(bobSubscriptionId);
+        assertTrue(
+            bobSub.status == DecentralizedSubscriptionService.SubscriptionStatus.Active, "Bob should remain active"
+        );
+        assertEq(bobSub.balance, 0, "Bob's balance should be depleted by renewal");
+
+        // 3. Charlie's individual state (The Lapse Path)
+        DecentralizedSubscriptionService.Subscription memory charlieSub = dsc.getSubscription(charlieSubscriptionId);
+        assertTrue(
+            charlieSub.status == DecentralizedSubscriptionService.SubscriptionStatus.Lapsed,
+            "Charlie should have lapsed due to zero balance"
+        );
+    }
+
+    function test_Chainlink_PerformUpkeep_InvalidIdsAreIsolatedAndOthersContinue() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+
+        // Bob subscribes to Alice's plan with enough balance for renewal
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_TWO);
+        dsc.subscribe(alicePlanId, PRICE_TWO);
+        vm.stopPrank();
+
+        // Fast forward time so Bob's subscription is actually due
+        vm.warp(block.timestamp + INTERVAL_ONE);
+
+        // Construct the mixed payload manually in memory
+        uint256[] memory dueIds = new uint256[](3);
+        dueIds[0] = 777; // Fake ID 1
+        dueIds[1] = bobSubscriptionId; // The Real, Valid ID (Sandwiched in the middle)
+        dueIds[2] = 888; // Fake ID 2
+
+        bytes memory performData = abi.encode(dueIds);
+
+        // PRE-UPKEEP STATE CAPTURE
+        uint256 bobBalanceBefore = dsc.getSubscription(bobSubscriptionId).balance;
+
+        // We expect the contract to emit RenewalFailed for the fake IDs
+
+        // Execute the performUpkeep.
+        // If the try/catch fails to isolate, this line will revert the whole test!
+        dsc.performUpkeep(performData);
+
+        // POST-UPKEEP ASSERTIONS (THE PROOF)
+        DecentralizedSubscriptionService.Subscription memory bobSub = dsc.getSubscription(bobSubscriptionId);
+
+        // 1. Prove Bob successfully renewed despite the bad data surrounding him
+        assertEq(bobSub.balance, bobBalanceBefore - PRICE_ONE, "Bob's renewal was blocked by the invalid IDs");
+
+        // 2. Prove Bob's due date advanced
+        assertEq(bobSub.nextPaymentDue, block.timestamp + INTERVAL_ONE, "Bob's schedule did not advance");
+    }
+
+    function test_Chainlink_PerformUpkeep_ReplayingPerformDataIsNoOp() external {
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+
+        // Bob subscribes to Alice's plan with enough balance for renewal
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_TWO * 2);
+        dsc.subscribe(alicePlanId, PRICE_TWO * 2);
+        vm.stopPrank();
+
+        // Fast forward time so Bob's subscription is due
+        vm.warp(block.timestamp + INTERVAL_ONE);
+
+        // Catch the return values from the checkUpkeep
+        (, bytes memory performData) = dsc.checkUpkeep("");
+
+        // PRE-UPKEEP STATE CAPTURE
+        uint256 bobBalanceBefore = dsc.getSubscription(bobSubscriptionId).balance;
+
+        // Execute the performUpkeep
+        dsc.performUpkeep(performData);
+
+        DecentralizedSubscriptionService.Subscription memory bobSub = dsc.getSubscription(bobSubscriptionId);
+        assertEq(bobSub.balance, bobBalanceBefore - PRICE_ONE, "Bob's renewal was not processed properly");
+        assertEq(bobSub.nextPaymentDue, block.timestamp + INTERVAL_ONE, "Bob's schedule did not advance");
+
+        uint256 aliceEarningsBeforeReplay = dsc.getProviderEarnings(alice, address(token));
+        // Execute the performUpkeep again
+        dsc.performUpkeep(performData);
+        DecentralizedSubscriptionService.Subscription memory bobSubA = dsc.getSubscription(bobSubscriptionId);
+        assertEq(bobSubA.balance, bobSub.balance, "Bob's renewal happened twice simultaneously");
+        assertEq(bobSubA.nextPaymentDue, block.timestamp + INTERVAL_ONE, "Bob's schedule advanced unnecessarily");
+        assertEq(
+            dsc.getProviderEarnings(alice, address(token)),
+            aliceEarningsBeforeReplay,
+            "Alice was credited twice for the same renewal period"
+        );
+    }
 }
