@@ -1646,4 +1646,143 @@ contract DecentralizedSubscriptionServiceTest is Test {
             "Alice was credited twice for the same renewal period"
         );
     }
+
+    ///////////////////////////////////////////
+    ////// INTERNAL RENEW SUBSCRIPTION //////
+    ///////////////////////////////////////////
+
+    function test_Internal_RenewSubscription_RevertsIfNotSelfCallable() external {
+        // Attempting to call the function as Bob (or any normal address)
+        vm.startPrank(bob);
+        vm.expectRevert(DecentralizedSubscriptionService.DecentralizedSubscriptionService__OnlySelfCallable.selector);
+        dsc._renewSubscription(1);
+        vm.stopPrank();
+    }
+
+    function test_Internal_RenewSubscription_SilentReturnIfNotActive() external {
+        // --- SETUP ---
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        dsc.cancelSubscription(bobSubscriptionId); // Status is now Cancelled
+        vm.stopPrank();
+
+        // --- TEST SILENT RETURN ---
+        // Fast forward time so it would technically be "due" if it were active
+        vm.warp(block.timestamp + INTERVAL_ONE);
+
+        // Prank as the contract itself to bypass the OnlySelfCallable check
+        vm.prank(address(dsc));
+        dsc._renewSubscription(bobSubscriptionId);
+
+        // Verify it silently returned without changing state back to active or lapsing
+        assertTrue(
+            dsc.getSubscription(bobSubscriptionId).status
+                == DecentralizedSubscriptionService.SubscriptionStatus.Cancelled,
+            "Silent return failed: state was altered"
+        );
+    }
+
+    function test_Internal_RenewSubscription_SilentReturnIfNotDue() external {
+        // --- SETUP ---
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        vm.stopPrank();
+
+        uint256 initialDueDate = dsc.getSubscription(bobSubscriptionId).nextPaymentDue;
+
+        // --- TEST SILENT RETURN ---
+        // We DO NOT fast forward time. It is not due yet.
+
+        // Prank as the contract itself
+        vm.prank(address(dsc));
+        dsc._renewSubscription(bobSubscriptionId);
+
+        // Verify it silently returned without advancing the due date
+        assertEq(
+            dsc.getSubscription(bobSubscriptionId).nextPaymentDue,
+            initialDueDate,
+            "Silent return failed: due date advanced"
+        );
+    }
+
+    ////////////////////////////////
+    ////// VIEW FUNCTIONS //////////
+    ////////////////////////////////
+
+    function test_View_GetPlan_RevertsOnInvalidId() external {
+        uint256 invalidPlanId = 999;
+
+        vm.expectRevert(DecentralizedSubscriptionService.DecentralizedSubscriptionService__PlanDoesNotExist.selector);
+        dsc.getPlan(invalidPlanId);
+    }
+
+    function test_View_GetSubscription_RevertsOnInvalidId() external {
+        uint256 invalidSubId = 999;
+
+        vm.expectRevert(
+            DecentralizedSubscriptionService.DecentralizedSubscriptionService__SubscriptionDoesNotExist.selector
+        );
+        dsc.getSubscription(invalidSubId);
+    }
+
+    function test_View_GetProviderEarnings_AccurateStates() external {
+        // Initial state for Alice should be 0
+        assertEq(dsc.getProviderEarnings(alice, address(token)), 0, "Initial earnings should be zero");
+
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        // Bob subscribes
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        vm.stopPrank();
+
+        // Earnings should now exactly equal PRICE_ONE
+        assertEq(dsc.getProviderEarnings(alice, address(token)), PRICE_ONE, "Earnings not updated after subscribe");
+
+        // Random third party (Charlie) should have 0 earnings
+        assertEq(dsc.getProviderEarnings(charlie, address(token)), 0, "Non-provider has earnings");
+    }
+
+    function test_View_GetActiveSubscriptionsCount_AccurateStates() external {
+        // Initial count should be 0
+        assertEq(dsc.getActiveSubscriptionsCount(), 0, "Initial count not zero");
+
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+
+        // Bob subscribes
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        vm.stopPrank();
+
+        // Count should go to 1
+        assertEq(dsc.getActiveSubscriptionsCount(), 1, "Count did not increment on subscribe");
+
+        // Bob cancels
+        vm.prank(bob);
+        dsc.cancelSubscription(bobSubscriptionId);
+
+        // Count should go back to 0
+        assertEq(dsc.getActiveSubscriptionsCount(), 0, "Count did not decrement on cancel");
+    }
 }
