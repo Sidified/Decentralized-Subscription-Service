@@ -706,6 +706,38 @@ contract DecentralizedSubscriptionServiceTest is Test {
         );
     }
 
+    function test_User_TopUp_RevertsIfSubscriptionLapsed() external {
+        // --- SETUP ---
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        // Bob subscribes with exactly PRICE_ONE, leaving a balance of 0
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        vm.stopPrank();
+
+        // --- LAPSE THE SUBSCRIPTION ---
+        // Fast forward past the interval
+        vm.warp(block.timestamp + INTERVAL_ONE + 1);
+
+        // Execute upkeep to kick Bob into Lapsed status
+        (, bytes memory performData) = dsc.checkUpkeep("");
+        dsc.performUpkeep(performData);
+
+        // --- ATTEMPT TOP UP (SHOULD REVERT) ---
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+
+        vm.expectRevert(
+            DecentralizedSubscriptionService.DecentralizedSubscriptionService__SubscriptionNotActive.selector
+        );
+        dsc.topUp(bobSubscriptionId, PRICE_ONE);
+        vm.stopPrank();
+    }
+
     //// TESTS FOR CANCEL SUBSCRIPTION /////
 
     // TODO: Write test_User_CancelSub_HappyPathOnLapsedSubscription
@@ -901,6 +933,68 @@ contract DecentralizedSubscriptionServiceTest is Test {
         // Check 3: The crucial swap.
         // Charlie (sub3) should have been moved from the end (Index 2) into Bob's old spot (Index 1)
         assertEq(dsc.getActiveSubscriptionIdAtIndex(1), sub3, "Swap-and-pop failed to move the last item");
+    }
+
+    function test_User_CancelSub_HappyPathOnLapsedSubscription() external {
+        // --- SETUP ---
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_TWO, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+
+        // Bob subscribes with PRICE_TWO + PRICE_ONE.
+        // Contract takes PRICE_TWO. Bob has PRICE_ONE left in his balance.
+        uint256 depositAmount = PRICE_TWO + PRICE_ONE;
+        vm.startPrank(bob);
+        token.approve(address(dsc), depositAmount);
+        dsc.subscribe(alicePlanId, depositAmount);
+        vm.stopPrank();
+
+        // --- LAPSE THE SUBSCRIPTION ---
+        // Fast forward past the interval
+        vm.warp(block.timestamp + INTERVAL_ONE + 1);
+
+        // Upkeep runs. Bob owes PRICE_TWO, but only has PRICE_ONE. He lapses.
+        // The upkeep removes him from the active array here.
+        (, bytes memory performData) = dsc.checkUpkeep("");
+        dsc.performUpkeep(performData);
+
+        // --- PRE-CANCEL CAPTURE ---
+        uint256 bobTokenBefore = token.balanceOf(bob);
+        uint256 contractTokenBefore = token.balanceOf(address(dsc));
+        uint256 activeArrayCountBeforeCancel = dsc.getActiveSubscriptionsCount();
+
+        // --- CANCEL ---
+        vm.prank(bob);
+        vm.expectEmit(true, false, false, true, address(dsc));
+        emit DecentralizedSubscriptionService.SubscriptionCancelled(bobSubscriptionId, PRICE_ONE);
+        dsc.cancelSubscription(bobSubscriptionId);
+
+        // --- POST-CANCEL ASSERTIONS ---
+        DecentralizedSubscriptionService.Subscription memory cancelledSub = dsc.getSubscription(bobSubscriptionId);
+
+        // 1. Status updated to Cancelled and balance zeroed
+        assertTrue(
+            cancelledSub.status == DecentralizedSubscriptionService.SubscriptionStatus.Cancelled,
+            "Status not updated to Cancelled"
+        );
+        assertEq(cancelledSub.balance, 0, "Balance not zeroed out");
+
+        // 2. Active array count UNCHANGED
+        // (Because it was already removed during Upkeep, the cancel function should have skipped array removal)
+        assertEq(
+            dsc.getActiveSubscriptionsCount(),
+            activeArrayCountBeforeCancel,
+            "Array count changed! Contract tried to double-remove a lapsed sub."
+        );
+
+        // 3. Tokens successfully refunded (He got his leftover PRICE_ONE back)
+        assertEq(token.balanceOf(bob), bobTokenBefore + PRICE_ONE, "Bob did not receive his refund");
+        assertEq(token.balanceOf(address(dsc)), contractTokenBefore - PRICE_ONE, "Contract balance did not decrease");
+
+        // 4. Mapping correctly cleared
+        assertEq(dsc.getUserSubscriptionId(bob, alicePlanId), 0, "User to Sub mapping not cleared");
     }
 
     //// TESTS FOR REACTIVATE SUBSCRIPTION /////
