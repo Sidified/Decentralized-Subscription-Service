@@ -1967,4 +1967,101 @@ contract DecentralizedSubscriptionServiceTest is Test {
         // Count should go back to 0
         assertEq(dsc.getActiveSubscriptionsCount(), 0, "Count did not decrement on cancel");
     }
+
+    /////////////////////////////
+    //////// FUZZ TESTS /////////
+    /////////////////////////////
+
+    function testFuzz_Subscribe_BalanceMatchesDepositMinusPrice(uint256 depositAmount) external {
+        depositAmount = bound(depositAmount, PRICE_ONE, STARTING_TOKEN_BALANCE);
+
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+        // Bob subscribes to Alice's plan
+        vm.startPrank(bob);
+        token.approve(address(dsc), depositAmount);
+        dsc.subscribe(alicePlanId, depositAmount);
+        vm.stopPrank();
+
+        DecentralizedSubscriptionService.Subscription memory bobSub = dsc.getSubscription(bobSubscriptionId);
+
+        assertEq(bobSub.balance, depositAmount - PRICE_ONE, "Bob's balance is not updated properly");
+    }
+
+    function testFuzz_TopUp_BalanceIncreasesByExactTopUpAmount(uint256 topUpAmount) external {
+        topUpAmount = bound(topUpAmount, PRICE_ONE, STARTING_TOKEN_BALANCE / 4);
+
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+        // Bob subscribes to Alice's plan
+        vm.startPrank(bob);
+        token.approve(address(dsc), PRICE_ONE);
+        dsc.subscribe(alicePlanId, PRICE_ONE);
+        vm.stopPrank();
+
+        uint256 balanceBefore = dsc.getSubscription(bobSubscriptionId).balance;
+        // Top-up
+        vm.startPrank(bob);
+        token.approve(address(dsc), topUpAmount);
+        dsc.topUp(bobSubscriptionId, topUpAmount);
+        vm.stopPrank();
+
+        uint256 balanceAfter = dsc.getSubscription(bobSubscriptionId).balance;
+        assertEq(balanceAfter - balanceBefore, topUpAmount, "TopUp delta should equal topUp amount");
+    }
+
+    function testFuzz_SubscribeAndCancel_RefundMaintainsExactTokenAccounting(uint256 depositAmount) external {
+        depositAmount = bound(depositAmount, PRICE_ONE, STARTING_TOKEN_BALANCE);
+
+        // Alice registers a plan
+        uint256 alicePlanId = dsc.getNextPlanId();
+        vm.prank(alice);
+        dsc.registerPlan(address(token), PRICE_ONE, INTERVAL_ONE, "Alice Plan");
+
+        uint256 bobTokenBefore = token.balanceOf(bob);
+        uint256 bobSubscriptionId = dsc.getNextSubscriptionId();
+        // Bob subscribes to Alice's plan
+        vm.startPrank(bob);
+        token.approve(address(dsc), depositAmount);
+        dsc.subscribe(alicePlanId, depositAmount);
+        vm.stopPrank();
+
+        uint256 bobBalanceAfterSubscribing = token.balanceOf(bob);
+        DecentralizedSubscriptionService.Subscription memory bobSub = dsc.getSubscription(bobSubscriptionId);
+
+        // Bob the immediately cancles subscription to Alice's plan
+        vm.prank(bob);
+        dsc.cancelSubscription(bobSubscriptionId);
+        DecentralizedSubscriptionService.Subscription memory bobSubAfCan = dsc.getSubscription(bobSubscriptionId);
+        uint256 providersUnWithdrawnEarnings = dsc.getProviderEarnings(alice, address(token));
+        uint256 contractTokenBalance = token.balanceOf(address(dsc));
+
+        assertEq(
+            bobSub.balance, depositAmount - PRICE_ONE, "Bob's subscription balance is not updated properly after topUp"
+        );
+        assertEq(
+            bobBalanceAfterSubscribing,
+            STARTING_TOKEN_BALANCE - depositAmount,
+            "Bob's token balance is not updated properly after subscription"
+        );
+        assertEq(bobSubAfCan.balance, 0, "Bob's subscription balance is not updated properly after cancel");
+        assertEq(
+            bobTokenBefore - token.balanceOf(bob),
+            PRICE_ONE,
+            "Bob's net token loss should equal exactly one period's price"
+        );
+        assertEq(
+            contractTokenBalance,
+            providersUnWithdrawnEarnings,
+            "Providers unwithdrawn earnings are not matching correctly with contracts balance"
+        );
+    }
 }
